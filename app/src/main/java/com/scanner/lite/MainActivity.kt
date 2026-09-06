@@ -86,6 +86,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private var isScanDialogEnabled = true
     private var isOcrUrlEnabled = true
+    private var isScanUrlEnabled = true // 新增：扫码网址检测开关
 
     // 全局持有弹窗引用，防止 WindowLeaked 内存泄漏
     private var currentDialog: BottomSheetDialog? = null
@@ -137,6 +138,7 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         isScanDialogEnabled = prefs.getBoolean("key_scan_dialog", true)
         isOcrUrlEnabled = prefs.getBoolean("key_ocr_url", true)
+        isScanUrlEnabled = prefs.getBoolean("key_scan_url", true) // 初始化扫码网址检测设置
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -427,7 +429,8 @@ class MainActivity : AppCompatActivity() {
             val matcher = Patterns.WEB_URL.matcher(result)
             val isUrl = matcher.find()
 
-            if (isUrl) {
+            // 只有开启了扫码网址检测开关，并且解析出的是网址时，才展示网址对话框
+            if (isScanUrlEnabled && isUrl) {
                 val foundUrl = matcher.group() ?: result
                 val urlToOpen = if (!foundUrl.startsWith("http://") && !foundUrl.startsWith("https://")) {
                     "https://$foundUrl"
@@ -590,7 +593,7 @@ class MainActivity : AppCompatActivity() {
         dialog.setCanceledOnTouchOutside(true)
         dialog.show()
 
-        // 2. 独立提示对话框，不会冲掉底部的 OCR 识别文本
+        // 2. OCR 文本网址识别提示框逻辑
         if (isOcrUrlEnabled) {
             checkAndPromptUrl(rawText)
         }
@@ -606,9 +609,11 @@ class MainActivity : AppCompatActivity() {
 
         val switchScanDialog = view.findViewById<MaterialSwitch>(R.id.switchScanDialog)
         val switchOcrUrl = view.findViewById<MaterialSwitch>(R.id.switchOcrUrl)
+        val switchScanUrl = view.findViewById<MaterialSwitch>(R.id.switchScanUrl) // 获取扫码网址开关控件
 
         switchScanDialog?.isChecked = isScanDialogEnabled
         switchOcrUrl?.isChecked = isOcrUrlEnabled
+        switchScanUrl?.isChecked = isScanUrlEnabled
 
         switchScanDialog?.setOnCheckedChangeListener { _, isChecked ->
             isScanDialogEnabled = isChecked
@@ -618,6 +623,11 @@ class MainActivity : AppCompatActivity() {
         switchOcrUrl?.setOnCheckedChangeListener { _, isChecked ->
             isOcrUrlEnabled = isChecked
             prefs.edit { putBoolean("key_ocr_url", isChecked) }
+        }
+
+        switchScanUrl?.setOnCheckedChangeListener { _, isChecked ->
+            isScanUrlEnabled = isChecked
+            prefs.edit { putBoolean("key_scan_url", isChecked) }
         }
 
         dialog.setOnDismissListener {

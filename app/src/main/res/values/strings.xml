@@ -16,6 +16,10 @@
     <string name="setting_scan_dialog_desc">关闭后自动复制结果，不弹窗阻断扫码</string>
     <string name="setting_ocr_url_title">OCR 识别网址检测</string>
     <string name="setting_ocr_url_desc">开启后当文本包含 URL 时提示跳转</string>
+    <string name="pref_scan_url_title">扫码自动检测并弹窗网址</string>
+    <string name="setting_scan_url_title">扫码网址自动识别</string>
+    <string name="setting_scan_url_desc">检测到二维码包含网址时自动弹窗提示打开</string>
+
 
     <!-- 扫码结果弹窗文案 -->
     <string name="dialog_title_result">扫描结果</string>
