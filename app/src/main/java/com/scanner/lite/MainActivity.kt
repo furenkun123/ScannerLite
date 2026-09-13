@@ -17,7 +17,9 @@ import android.os.Bundle
 import android.text.method.LinkMovementMethod
 import android.text.util.Linkify
 import android.util.Patterns
+import android.util.Size
 import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
@@ -31,11 +33,15 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
@@ -53,6 +59,10 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.concurrent.ExecutorService
@@ -79,6 +89,7 @@ class MainActivity : AppCompatActivity() {
 
     // 状态与配置标记
     private var isFlashOn = false
+    @Volatile // 确保跨线程可见性
     private var isScanningEnabled = true
     private var isOcrMode = false // false: 扫码, true: OCR
     private var scanAnimator: ObjectAnimator? = null
@@ -86,7 +97,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private var isScanDialogEnabled = true
     private var isOcrUrlEnabled = true
-    private var isScanUrlEnabled = true // 新增：扫码网址检测开关
+    private var isScanUrlEnabled = true // 扫码网址检测开关
 
     // 全局持有弹窗引用，防止 WindowLeaked 内存泄漏
     private var currentDialog: BottomSheetDialog? = null
@@ -100,7 +111,13 @@ class MainActivity : AppCompatActivity() {
     private var soundId: Int = 0
     private val barcodeScanner: BarcodeScanner by lazy {
         val options = BarcodeScannerOptions.Builder()
-            .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
+            // 明确只允许最常用的几种一维码和二维码，彻底根治“误识别”
+            .setBarcodeFormats(
+                Barcode.FORMAT_CODE_128,
+                Barcode.FORMAT_CODE_39,
+                Barcode.FORMAT_QR_CODE,
+                Barcode.FORMAT_EAN_13
+            )
             .build()
         BarcodeScanning.getClient(options)
     }
@@ -138,7 +155,7 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         isScanDialogEnabled = prefs.getBoolean("key_scan_dialog", true)
         isOcrUrlEnabled = prefs.getBoolean("key_ocr_url", true)
-        isScanUrlEnabled = prefs.getBoolean("key_scan_url", true) // 初始化扫码网址检测设置
+        isScanUrlEnabled = prefs.getBoolean("key_scan_url", true)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -218,7 +235,18 @@ class MainActivity : AppCompatActivity() {
 
         previewView.setOnTouchListener { view, event ->
             scaleGestureDetector.onTouchEvent(event)
-            view.performClick()
+
+            if (event.action == MotionEvent.ACTION_UP) {
+                view.performClick()
+
+                // 点击屏幕时，触发相机在该点进行自动对焦
+                camera?.let { cam ->
+                    val factory = previewView.meteringPointFactory
+                    val point = factory.createPoint(event.x, event.y)
+                    val action = FocusMeteringAction.Builder(point).build()
+                    cam.cameraControl.startFocusAndMetering(action)
+                }
+            }
             true
         }
     }
@@ -295,8 +323,19 @@ class MainActivity : AppCompatActivity() {
                 it.surfaceProvider = previewView.surfaceProvider
             }
 
+            val resolutionSelector = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        Size(1920, 1080),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                    )
+                )
+                .build()
+
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setResolutionSelector(resolutionSelector)
                 .build()
                 .also {
                     it.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -327,19 +366,66 @@ class MainActivity : AppCompatActivity() {
         val mediaImage = imageProxy.image
         if (mediaImage != null && !isOcrMode && isScanningEnabled) {
             val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+
+            // 第一步：先用 ML Kit 进行识别
             barcodeScanner.process(image)
                 .addOnSuccessListener { barcodes ->
                     if (barcodes.isNotEmpty() && isScanningEnabled && !isOcrMode) {
-                        barcodes.firstOrNull()?.rawValue?.let { result ->
-                            onBarcodeDetected(result)
-                        }
+                        isScanningEnabled = false
+                        barcodes.firstOrNull()?.rawValue?.let { onBarcodeDetected(it) }
+                        imageProxy.close()
+                    } else {
+                        // 如果 ML Kit 未匹配到目标，转交 ZXing 兜底
+                        decodeWithZXing(imageProxy)
                     }
                 }
-                .addOnCompleteListener {
-                    imageProxy.close()
+                .addOnFailureListener {
+                    decodeWithZXing(imageProxy)
                 }
         } else {
             imageProxy.close()
+        }
+    }
+
+    private fun decodeWithZXing(imageProxy: ImageProxy) {
+        if (!isScanningEnabled || isOcrMode) {
+            imageProxy.close()
+            return
+        }
+
+        cameraExecutor.execute {
+            try {
+                val plane = imageProxy.planes[0]
+                val buffer = plane.buffer
+                val width = imageProxy.width
+                val height = imageProxy.height
+                val rowStride = plane.rowStride
+
+                // 剥离 CameraX 的行对齐填充 (Row Stride Padding)，防止图像发生横向切变与错位
+                val cleanedData = ByteArray(width * height)
+                for (row in 0 until height) {
+                    buffer.position(row * rowStride)
+                    buffer.get(cleanedData, row * width, width)
+                }
+
+                val source = PlanarYUVLuminanceSource(
+                    cleanedData, width, height, 0, 0, width, height, false
+                )
+                val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+                val reader = MultiFormatReader()
+                val result = reader.decodeWithState(binaryBitmap)
+
+                if (result != null && isScanningEnabled && !isOcrMode) {
+                    isScanningEnabled = false
+                    runOnUiThread {
+                        onBarcodeDetected(result.text)
+                    }
+                }
+            } catch (_: Exception) {
+                // ZXing 未捕获条码抛出异常属正常流程
+            } finally {
+                imageProxy.close()
+            }
         }
     }
 
@@ -378,8 +464,10 @@ class MainActivity : AppCompatActivity() {
         try {
             val image = InputImage.fromFilePath(this, uri)
             if (isOcrMode) {
-                val bitmap =
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri))
+                val source = ImageDecoder.createSource(contentResolver, uri)
+                val bitmap = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+                }
 
                 ocrManager.processBitmap(
                     bitmap = bitmap,
@@ -398,6 +486,7 @@ class MainActivity : AppCompatActivity() {
                 barcodeScanner.process(image)
                     .addOnSuccessListener { barcodes ->
                         if (barcodes.isNotEmpty()) {
+                            isScanningEnabled = false
                             barcodes.firstOrNull()?.rawValue?.let { onBarcodeDetected(it) }
                         } else {
                             Toast.makeText(this, "未识别到有效的二维码", Toast.LENGTH_SHORT).show()
@@ -414,7 +503,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onBarcodeDetected(result: String) {
-        isScanningEnabled = false
         runOnUiThread { stopScanAnimation() }
 
         playBeepSound()
@@ -429,7 +517,6 @@ class MainActivity : AppCompatActivity() {
             val matcher = Patterns.WEB_URL.matcher(result)
             val isUrl = matcher.find()
 
-            // 只有开启了扫码网址检测开关，并且解析出的是网址时，才展示网址对话框
             if (isScanUrlEnabled && isUrl) {
                 val foundUrl = matcher.group() ?: result
                 val urlToOpen = if (!foundUrl.startsWith("http://") && !foundUrl.startsWith("https://")) {
@@ -543,7 +630,6 @@ class MainActivity : AppCompatActivity() {
 
         tvOcrOriginal.text = rawText
 
-        // 1. 开启 OCR 文本中的网址高亮与直接点击支持（在识别全文里可直接点击网址）
         if (isOcrUrlEnabled) {
             Linkify.addLinks(tvOcrOriginal, Linkify.WEB_URLS)
             tvOcrOriginal.movementMethod = LinkMovementMethod.getInstance()
@@ -561,6 +647,8 @@ class MainActivity : AppCompatActivity() {
                 text = rawText,
                 onSuccess = { translated ->
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+
                         layoutTranslation.visibility = View.VISIBLE
                         tvOcrTranslated.text = translated.ifBlank { "（未能翻译该文本）" }
                         btnStartTranslate.text = "已翻译"
@@ -568,9 +656,11 @@ class MainActivity : AppCompatActivity() {
                 },
                 onFailure = {
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+
                         btnStartTranslate.isEnabled = true
                         btnStartTranslate.text = "重试翻译"
-                        Toast.makeText(this, "翻译引擎加载失败", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "翻译引擎加载失败", Toast.LENGTH_SHORT).show()
                     }
                 }
             )
@@ -592,11 +682,6 @@ class MainActivity : AppCompatActivity() {
 
         dialog.setCanceledOnTouchOutside(true)
         dialog.show()
-
-        // 2. OCR 文本网址识别提示框逻辑
-        if (isOcrUrlEnabled) {
-            checkAndPromptUrl(rawText)
-        }
     }
 
     private fun showSettingsBottomSheet() {
@@ -609,7 +694,7 @@ class MainActivity : AppCompatActivity() {
 
         val switchScanDialog = view.findViewById<MaterialSwitch>(R.id.switchScanDialog)
         val switchOcrUrl = view.findViewById<MaterialSwitch>(R.id.switchOcrUrl)
-        val switchScanUrl = view.findViewById<MaterialSwitch>(R.id.switchScanUrl) // 获取扫码网址开关控件
+        val switchScanUrl = view.findViewById<MaterialSwitch>(R.id.switchScanUrl)
 
         switchScanDialog?.isChecked = isScanDialogEnabled
         switchOcrUrl?.isChecked = isOcrUrlEnabled
@@ -637,51 +722,6 @@ class MainActivity : AppCompatActivity() {
         dialog.setContentView(view)
         dialog.window?.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
             ?.setBackgroundResource(android.R.color.transparent)
-        dialog.show()
-    }
-
-    private fun checkAndPromptUrl(text: String) {
-        val matcher = Patterns.WEB_URL.matcher(text)
-        if (!matcher.find()) return
-
-        val rawUrl = matcher.group() ?: return
-        val urlToOpen = if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
-            "https://$rawUrl"
-        } else {
-            rawUrl
-        }
-
-        // 使用现有的 dialog_url_prompt 布局从底部弹出
-        val dialog = BottomSheetDialog(this)
-        val rootView = findViewById<ViewGroup>(android.R.id.content)
-        val view = layoutInflater.inflate(R.layout.dialog_url_prompt, rootView, false)
-
-        val tvUrlContent = view.findViewById<TextView>(R.id.tvUrlContent)
-        val btnOpenUrl = view.findViewById<Button>(R.id.btnOpenUrl)
-        val btnCancelUrl = view.findViewById<Button>(R.id.btnCancelUrl)
-
-        tvUrlContent.text = urlToOpen
-
-        btnOpenUrl.setOnClickListener {
-            try {
-                val intent = Intent(Intent.ACTION_VIEW, urlToOpen.toUri())
-                startActivity(intent)
-            } catch (_: Exception) {
-                Toast.makeText(this, "无法打开该链接，未找到合适应用", Toast.LENGTH_SHORT).show()
-            }
-            dialog.dismiss()
-        }
-
-        btnCancelUrl.setOnClickListener {
-            dialog.dismiss()
-        }
-
-        dialog.setContentView(view)
-
-        // 背景透明化处理（适配圆角 Layout）
-        dialog.window?.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
-            ?.setBackgroundResource(android.R.color.transparent)
-
         dialog.show()
     }
 

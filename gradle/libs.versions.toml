@@ -13,6 +13,7 @@ room = "2.8.4"
 ksp = "2.3.6"
 mlkitTextRecognition = "16.0.1"
 mlkitTranslate = "17.0.3"
+zxing = "3.5.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -23,6 +24,7 @@ androidx-room-runtime = { group = "androidx.room", name = "room-runtime", versio
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 mlkit-text-chinese = { module = "com.google.mlkit:text-recognition-chinese", version.ref = "mlkitTextRecognition" }
 mlkit-text-japanese = { module = "com.google.mlkit:text-recognition-japanese", version.ref = "mlkitTextRecognition" }
