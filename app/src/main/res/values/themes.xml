@@ -1,8 +1,25 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+<resources>
+    <!-- Base application theme (Targeting SDK 31+) -->
     <style name="Base.Theme.Scanner" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <!-- 1. 透明状态栏与导航栏 -->
+        <item name="android:windowTranslucentStatus">false</item>
+        <item name="android:windowTranslucentNavigation">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+
+        <!-- 2. 关闭系统强制的半透明对比度遮罩（保持纯透明） -->
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+
+        <!-- 3. 刘海屏/挖孔屏全屏延伸（扫描/相机应用必备） -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+
+        <!-- 4. 浅色模式：状态栏与导航栏图标设为深色 -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+
+        <!-- 5. 默认窗口背景 -->
+        <item name="android:windowBackground">?attr/colorSurface</item>
     </style>
 
     <style name="Theme.Scanner" parent="Base.Theme.Scanner" />

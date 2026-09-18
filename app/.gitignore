@@ -1,1 +1,14 @@
 /build
+# 忽略所有 release 输出目录与打包产物
+**/release/
+app/release/
+*.apk
+*.aab
+
+# 忽略混淆映射文件与编译产物
+**/mapping.txt
+**/R.txt
+
+# 严禁上传签名密钥文件
+*.jks
+*.keystore
