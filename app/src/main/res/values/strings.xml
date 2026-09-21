@@ -1,0 +1,8 @@
+<resources>
+        <string name="app_name">极简扫码</string>
+        <string name="app_name_dev">极简扫码 Dev</string>
+
+        <!-- 快捷设置磁贴相关文本 -->
+        <string name="tile_label">扫扫</string>
+        <string name="tile_description">快速打开扫码界面</string>
+</resources>
