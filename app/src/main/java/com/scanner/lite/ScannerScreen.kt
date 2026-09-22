@@ -1,7 +1,9 @@
 package com.scanner.lite
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.util.Size
+import android.view.ScaleGestureDetector
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -11,6 +13,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
+import androidx.camera.core.ZoomState
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -25,14 +28,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,17 +64,22 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.time.Duration.Companion.milliseconds
 
 // 主界面：相机画面 + 上面叠加各种按钮
+@SuppressLint("DefaultLocale")
 @Composable
 fun ScannerScreen() {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     var flashOn by remember { mutableStateOf(false) }      // 闪光灯是否开启
     var isScanMode by remember { mutableStateOf(true) }    // true=扫码，false=OCR
     var scanning by remember { mutableStateOf(true) }      // 是否正在等待识别结果
     var recognizing by remember { mutableStateOf(false) }  // 是否正在识别图片中
-    var camera by remember { mutableStateOf<Camera?>(null) } // 相机对象，用来控制手电筒
+    var camera by remember { mutableStateOf<Camera?>(null) } // 相机对象，用来控制手电筒与变焦
+    var zoomState by remember { mutableStateOf<ZoomState?>(null) } // 变焦状态
 
     // 拍照用例
     val imageCapture = remember {
@@ -80,6 +98,13 @@ fun ScannerScreen() {
         }
     }
 
+    // 监听相机变焦状态
+    LaunchedEffect(camera) {
+        camera?.cameraInfo?.zoomState?.observe(lifecycleOwner) { state ->
+            zoomState = state
+        }
+    }
+
     // 相机就绪或 flashOn 变化时，真正开关手电筒
     LaunchedEffect(camera, flashOn) {
         camera?.cameraControl?.enableTorch(flashOn)
@@ -90,6 +115,7 @@ fun ScannerScreen() {
         scanning = true
         onPauseOrDispose { flashOn = false }
     }
+
     // 只有"直接复制"模式不跳页面，才需要隔一会儿自动恢复扫码
     LaunchedEffect(scanning) {
         if (!scanning && SettingsStore.copyDirect(context)) {
@@ -132,6 +158,63 @@ fun ScannerScreen() {
                     flashOn = !flashOn
                 } else {
                     Toast.makeText(context, "此设备没有闪光灯", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        // 侧边倍率面板 (右侧浮层)
+        if (camera != null) {
+            val currentZoomRatio = zoomState?.zoomRatio ?: 1.0f
+            val formattedZoom = String.format("%.1fX", currentZoomRatio)
+
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 16.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = Color.Black.copy(alpha = 0.55f),
+                tonalElevation = 6.dp
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ZoomIn,
+                        contentDescription = "Zoom",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = formattedZoom,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.width(16.dp),
+                        color = Color.White.copy(alpha = 0.3f)
+                    )
+
+                    // 预设快捷倍率
+                    listOf(1f, 2f, 5f).forEach { preset ->
+                        val isSelected = abs(currentZoomRatio - preset) < 0.2f
+                        Surface(
+                            onClick = { camera?.cameraControl?.setZoomRatio(preset) },
+                            shape = CircleShape,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "${preset.toInt()}x",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -186,13 +269,13 @@ fun ScannerScreen() {
     }
 }
 
-// 相机画面 + 实时分析 + 拍照
+// 相机画面 + 实时分析 + 拍照 + 双指缩放
 @Composable
 fun CameraPreview(
     imageCapture: ImageCapture,
     scanEnabled: Boolean,
     onBarcode: (String) -> Unit,
-    onCameraReady: (Camera) -> Unit   // 新增：相机绑定成功后，把相机对象交出去
+    onCameraReady: (Camera) -> Unit   // 相机绑定成功后，把相机对象交出去
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     // 让相机里的回调始终拿到最新的值
@@ -203,6 +286,24 @@ fun CameraPreview(
         modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
             val previewView = PreviewView(ctx)
+            var boundCameraRef: Camera? = null
+
+            // 双指捏合手势监听
+            val scaleDetector = ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val currentZoomRatio = boundCameraRef?.cameraInfo?.zoomState?.value?.zoomRatio ?: 1f
+                    val delta = detector.scaleFactor
+                    boundCameraRef?.cameraControl?.setZoomRatio(currentZoomRatio * delta)
+                    return true
+                }
+            })
+
+            previewView.setOnTouchListener { v, event ->
+                scaleDetector.onTouchEvent(event)
+                v.performClick()
+                true
+            }
+
             val providerFuture = ProcessCameraProvider.getInstance(ctx)
 
             providerFuture.addListener({
@@ -243,6 +344,7 @@ fun CameraPreview(
                     analysis,
                     imageCapture
                 )
+                boundCameraRef = boundCamera
                 onCameraReady(boundCamera)
             }, ContextCompat.getMainExecutor(ctx))
 
